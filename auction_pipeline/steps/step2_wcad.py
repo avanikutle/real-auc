@@ -142,6 +142,44 @@ def _try_fetch_appraisal_pdf(r_number: str, year: int, dest: Path, force: bool) 
         return False
 
 
+def _fetch_wcad_details(r_number: str) -> dict:
+    """Fetch property details directly from the WCAD property page."""
+    url = f"https://search.wcad.org/Property-Detail/PropertyQuickRefID/{r_number}"
+    log.info("Fetching WCAD property details for %s", r_number)
+    details = {}
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=15)
+        resp.raise_for_status()
+        html = resp.text
+        
+        # Regex is often more robust than beautifulsoup for these highly-nested Kendo grids
+        # Year Built
+        m_year = re.search(r"Year\s*Built[\s\S]*?(\d{4})", html, re.IGNORECASE)
+        if m_year:
+            details["year_built"] = int(m_year.group(1))
+            
+        # Square Footage
+        # Looking for things like "1,546 Sq. Ft" or "1546 Sq. Ft"
+        m_sqft = re.search(r"([\d,]+)\s*Sq\.?\s*Ft", html, re.IGNORECASE)
+        if m_sqft:
+            try:
+                details["sqft"] = int(m_sqft.group(1).replace(",", ""))
+            except ValueError:
+                pass
+                
+        # Market Value
+        # Often the highest dollar value on the page
+        dollar_amounts = re.findall(r"\$([\d,]+)", html)
+        if dollar_amounts:
+            amounts = [int(v.replace(",", "")) for v in dollar_amounts]
+            amounts = [a for a in amounts if a > 1000]
+            if amounts:
+                details["market_value"] = max(amounts)
+                
+    except requests.RequestException as exc:
+        log.warning("WCAD property detail fetch failed for %s: %s", r_number, exc)
+        
+    return details
 def _run_one(session, prop: Property, force: bool) -> None:
     if not force:
         existing = (
@@ -165,7 +203,7 @@ def _run_one(session, prop: Property, force: bool) -> None:
             prop.r_number = r_number
             session.add(prop)
 
-    # 2. Try appraisal PDF download
+    # 2. Try appraisal PDF download and detail fetch
     r_number = prop.r_number or extracted.get("r_number")
     if r_number:
         pdf_dest = workspace_path(
@@ -178,6 +216,11 @@ def _run_one(session, prop: Property, force: bool) -> None:
             if ok:
                 extracted["appraisal_pdf_year"] = yr
                 break
+                
+        # Fetch detailed properties
+        details = _fetch_wcad_details(r_number)
+        if details:
+            extracted.update(details)
 
     # 3. Persist step_results
     sr = StepResult(

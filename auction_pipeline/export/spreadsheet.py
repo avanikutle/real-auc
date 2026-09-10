@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -63,31 +64,39 @@ _CENTER = Alignment(horizontal="center", vertical="top")
 # Master sheet column definitions
 # ---------------------------------------------------------------------------
 _MASTER_COLS = [
-    ("Entry No", "entry_no"),
-    ("Owner", "owner_full_name"),
-    ("File No", "source_file_name"),
-    ("R Number", "r_number"),
+    ("ENTRY NO", "_entry_index"),
+    ("OWNER'S Full NAMES", "owner_full_name"),
+    ("FILE NO", "source_file_name"),
+    ("CREATION DATE", "_creation_date"),
+    ("ADDRESS", "address"),
+    ("CITY", "_city"),
+    ("LEGAL DESCRIPTION", "legal_description"),
     ("Instrument No", "instrument_number"),
-    ("Address", "address"),
-    ("Legal Description", "legal_description"),
+    ("Property RNUMBER", "r_number"),
+    ("Year Built", "_year_built"),
+    ("Zestimate", "_zillow_url"),
+    ("Bed", "_bed"),
+    ("Bath", "_bath"),
+    ("SF", "_sqft"),
     ("County Assessed Value", "_assessed_value"),
     ("Trustee", "trustee"),
-    ("Auction Price", "_auction_price"),        # placeholder — populated post-sale
-    ("Approx Current Balance", "_est_balance"),
-    ("Est % Paid Down", "_est_pct_paid_down"),
-    ("Filter Flag", "_filter_flag"),
-    ("Other Liens (count)", "_lien_count"),
-    ("Sale Date", "sale_date"),
-    ("Loan Type", "loan_type"),
-    ("Lender", "lender"),
-    ("Servicer", "servicer"),
-    ("Is Purchase Money", "is_purchase_money"),
-    ("Has HOA Rider", "has_hoa_rider"),
+    ("Owner", "_short_owner"),
+    ("Approx current loan Amount", "_est_balance"),
+    ("other liens", "_lien_count"),
     ("Original Loan Amount", "original_loan_amount"),
-    ("Origination Date", "loan_origination_date"),
-    ("Assumed Rate", "_assumed_rate"),
-    ("Monthly Payment (Est)", "_est_monthly_payment"),
+    ("Loan Origination Date", "loan_origination_date"),
+    ("Loan Term (Yrs)", "_loan_term"),
+    ("Est. Interest Rate", "_assumed_rate"),
+    ("Auction/Sale Date", "sale_date"),
+    ("Est. Market Value", "_market_value"),
+    ("Est. Equity ($)", "_est_equity_dollar"),
+    ("Est. Equity (%)", "_est_equity_pct"),
+    ("Renovation Budget (Override)", "_renovation_budget"),
+    ("Max Cash Offer", "_max_cash_offer"),
+    ("Property Tax(Pending)", "_tax_url"),
+    ("Decision Flag", "_decision_flag"),
     ("Status", "status"),
+    ("Notes", "_notes"),
 ]
 
 
@@ -120,16 +129,32 @@ def _get_step_result(session, entry_no: str, step_name: str) -> dict:
     return {}
 
 
-def _build_property_data(session, prop: Property) -> dict[str, Any]:
+def _build_property_data(session, prop: Property, idx: int) -> dict[str, Any]:
     """Collect all data for one property into a flat dict."""
     data: dict[str, Any] = {}
 
+    data["_entry_index"] = idx
+    data["_creation_date"] = datetime.now().strftime("%m/%d/%Y")
+    
     # Basic property fields
     for col_key in ["entry_no", "owner_full_name", "source_file_name", "r_number",
                     "instrument_number", "address", "legal_description", "trustee",
-                    "sale_date", "loan_type", "lender", "servicer", "is_purchase_money",
-                    "has_hoa_rider", "original_loan_amount", "loan_origination_date", "status"]:
+                    "sale_date", "original_loan_amount", "loan_origination_date", "status"]:
         data[col_key] = getattr(prop, col_key, None)
+
+    # City parsing
+    addr = data.get("address") or ""
+    parts = addr.split(",")
+    data["_city"] = parts[1].strip() if len(parts) > 1 else ""
+    
+    # Short owner
+    owner = data.get("owner_full_name") or ""
+    # Just take the first word or part before "AND"
+    data["_short_owner"] = owner.split(" AND ")[0].split()[0] if owner else ""
+
+    # Zillow URL
+    zillow_addr = urllib.parse.quote(addr)
+    data["_zillow_url"] = f"https://www.zillow.com/homes/{zillow_addr}_rb/"
 
     # Loan estimate
     est: LoanEstimate | None = session.get(LoanEstimate, prop.entry_no)
@@ -138,25 +163,58 @@ def _build_property_data(session, prop: Property) -> dict[str, Any]:
         data["_est_pct_paid_down"] = est.est_pct_paid_down
         data["_filter_flag"] = est.filter_flag
         data["_assumed_rate"] = est.assumed_rate
-        data["_est_monthly_payment"] = est.est_monthly_payment
     else:
         data["_est_balance"] = None
         data["_est_pct_paid_down"] = None
         data["_filter_flag"] = "NOT_CALCULATED"
         data["_assumed_rate"] = None
-        data["_est_monthly_payment"] = None
 
-    # WCAD assessed value
+    data["_loan_term"] = 30  # Default to 30 yrs
+
+    # WCAD assessed value and details
     wcad = _get_step_result(session, prop.entry_no, "step2_wcad")
     data["_assessed_value"] = wcad.get("assessed_value")
+    data["_year_built"] = wcad.get("year_built")
+    data["_sqft"] = wcad.get("sqft")
+    data["_market_value"] = wcad.get("market_value") or wcad.get("assessed_value")
+
+    # Empty user fields
+    data["_bed"] = ""
+    data["_bath"] = ""
+    data["_renovation_budget"] = ""
 
     # Lien count
     liens_data = _get_step_result(session, prop.entry_no, "step5_liens")
-    lien_count = liens_data.get("lien_count")
-    data["_lien_count"] = lien_count
+    data["_lien_count"] = liens_data.get("lien_count")
 
-    # Auction price — not available pre-sale
-    data["_auction_price"] = None
+    # Decision Flag mapping
+    flags = {
+        "GOOD_CANDIDATE": "Investigate Further",
+        "LOW_PAYDOWN": "Skip / Low Equity",
+        "NOT_CALCULATED": "Pending Data"
+    }
+    data["_decision_flag"] = flags.get(data.get("_filter_flag", ""), "Pending Data")
+
+    # Notes
+    data["_notes"] = ""
+
+    # Property Tax URL (from step 3)
+    tax_data = _get_step_result(session, prop.entry_no, "step3_tax")
+    tax_url = tax_data.get("tax_search_url")
+    if not tax_url and prop.r_number:
+        tax_url = f"https://tax.wilcotx.gov/Property-Detail/PropertyQuickRefID/{prop.r_number}"
+    data["_tax_url"] = tax_url
+
+    # Excel Formulas
+    r = idx + 1  # Excel row number (1-based, with header on row 1)
+    
+    # Y = Est. Market Value
+    # R = Approx current loan Amount
+    # Z = Est. Equity ($)
+    # AB = Renovation Budget
+    data["_est_equity_dollar"] = f"=(Y{r}-R{r})"
+    data["_est_equity_pct"] = f"=IF(Y{r}>0, Z{r}/Y{r}, 0)"
+    data["_max_cash_offer"] = f"=(Y{r}*0.70)-AB{r}-R{r}"
 
     # Collect all sources (URLs + file paths) from step_results
     sources = []
@@ -199,28 +257,58 @@ def _write_master_sheet(ws, properties_data: list[dict]) -> None:
                 value = "Yes" if value else "No"
 
             cell = ws.cell(row=r, column=c, value=value)
-            cell.font = _BODY_FONT
+            
+            # Formatting logic for Zillow and Tax URLs
+            if key in ("_zillow_url", "_tax_url") and value:
+                cell.hyperlink = value
+                cell.font = _LINK_FONT
+                cell.value = "Link"
+            else:
+                cell.font = _BODY_FONT
+
+            # Formulas need special treatment? openpyxl handles string formulas if they start with =
+            
             cell.border = _THIN_BORDER
             cell.alignment = _WRAP
             if fill:
                 cell.fill = fill
 
-    # Column widths
+    # Column widths based on new columns
     col_widths = {
-        get_column_letter(1): 30,   # Entry No
-        get_column_letter(2): 35,   # Owner
+        get_column_letter(1): 10,   # Entry No
+        get_column_letter(2): 30,   # Full Name
         get_column_letter(3): 22,   # File No
-        get_column_letter(4): 12,   # R Number
-        get_column_letter(5): 16,   # Instrument No
-        get_column_letter(6): 35,   # Address
-        get_column_letter(7): 50,   # Legal Description
-        get_column_letter(8): 20,   # Assessed Value
-        get_column_letter(9): 30,   # Trustee
-        get_column_letter(10): 15,  # Auction Price
-        get_column_letter(11): 22,  # Current Balance
-        get_column_letter(12): 16,  # % Paid Down
-        get_column_letter(13): 18,  # Filter Flag
-        get_column_letter(14): 16,  # Lien Count
+        get_column_letter(4): 12,   # Creation Date
+        get_column_letter(5): 30,   # Address
+        get_column_letter(6): 15,   # City
+        get_column_letter(7): 40,   # Legal Desc
+        get_column_letter(8): 16,   # Instrument
+        get_column_letter(9): 12,   # R Number
+        get_column_letter(10): 10,  # Year Built
+        get_column_letter(11): 10,  # Zestimate (Link)
+        get_column_letter(12): 8,   # Bed
+        get_column_letter(13): 8,   # Bath
+        get_column_letter(14): 10,  # SF
+        get_column_letter(15): 15,  # County Assessed
+        get_column_letter(16): 30,  # Trustee
+        get_column_letter(17): 15,  # Owner
+        get_column_letter(18): 15,  # Loan Balance
+        get_column_letter(19): 10,  # Liens
+        get_column_letter(20): 15,  # Orig Amount
+        get_column_letter(21): 12,  # Orig Date
+        get_column_letter(22): 10,  # Term
+        get_column_letter(23): 10,  # Int Rate
+        get_column_letter(24): 12,  # Auction Date
+        get_column_letter(25): 15,  # Est Market Value
+        get_column_letter(26): 15,  # Equity $
+        get_column_letter(27): 12,  # Equity %
+        get_column_letter(28): 15,  # Reno Budget
+        get_column_letter(29): 15,  # Max Cash
+        get_column_letter(30): 10,  # Tax Link
+        get_column_letter(31): 18,  # Decision
+        get_column_letter(32): 12,  # Status
+        get_column_letter(33): 30,  # Notes
+
     }
     _set_column_widths(ws, col_widths)
 
@@ -371,9 +459,9 @@ def run_export(month: str, county: str = "williamson", output_path: str = "out.x
         # Collect all property data
         properties_data = []
         master_errors = []
-        for prop in props:
+        for idx, prop in enumerate(props, start=1):
             try:
-                data = _build_property_data(session, prop)
+                data = _build_property_data(session, prop, idx)
                 properties_data.append(data)
             except Exception as exc:
                 log.error("Failed to build data for %s: %s", prop.entry_no, exc)
@@ -450,9 +538,9 @@ def run_csv_export(month: str, county: str = "williamson", output_path: str = "o
         with open(output, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=headers, extrasaction="ignore")
             writer.writeheader()
-            for prop in props:
+            for idx, prop in enumerate(props, start=1):
                 try:
-                    data = _build_property_data(session, prop)
+                    data = _build_property_data(session, prop, idx)
                     row: dict[str, Any] = {}
                     for col_label, key in _MASTER_COLS:
                         value = data.get(key)
