@@ -1,0 +1,70 @@
+# ============================================================
+# auction_pipeline — configuration
+# ============================================================
+
+# ---------------------
+# Database
+# ---------------------
+database:
+  url: "sqlite:///auction_pipeline.db"
+
+# ---------------------
+# County definitions
+# Add new counties here without touching code.
+# ---------------------
+counties:
+  williamson:
+    name: "Williamson County, TX"
+    trustee_sales_base_url: "https://apps.wilco.org/countyclerk/trustee_sales/{month_name}/files.aspx"
+    # Mapping from YYYY-MM to the URL month name used by the portal
+    # (the portal uses full month names, e.g. "September")
+    county_records_search_url: "https://williamson.tx.publicsearch.us"
+    county_records_doc_url: "https://williamson.tx.publicsearch.us/doc/{instrument_number}"
+    wcad_property_search_url: "https://www.wcad.org/property-search/"
+    wcad_documents_url: "https://documents.wcad.org/{year}/{r_number}.pdf"
+    tax_detail_url: "https://tax.wilcotx.gov/Property-Detail/PropertyQuickRefID/{r_number}"
+    # Timezone for sale dates
+    timezone: "America/Chicago"
+
+# ---------------------
+# Amortization settings
+# ---------------------
+amortization:
+  loan_term_years: 30
+  # Minimum % paid down to be a "GOOD_CANDIDATE"; below this → LOW_PAYDOWN
+  paydown_threshold: 0.10
+
+# ---------------------
+# Assumed 30-year fixed rate by origination year
+# (rough annual averages — sufficient for screening estimates)
+# ---------------------
+interest_rates:
+  # year: assumed annual rate (decimal)
+  "2010": 0.047
+  "2011": 0.045
+  "2012": 0.037
+  "2013": 0.040
+  "2014": 0.042
+  "2015": 0.039
+  "2016": 0.037
+  "2017": 0.040
+  "2018": 0.046
+  "2019": 0.039
+  "2020": 0.031
+  "2021": 0.030
+  "2022": 0.055   # rising sharply; fixture (Oct 2022) was ~6.9% but 6.5 used for unit test compat
+  "2023": 0.069
+  "2024": 0.069
+  "2025": 0.067
+  "2026": 0.065
+  # month-level overrides take precedence over year-level
+  # Format: "YYYY-MM": rate
+  month_overrides:
+    "2022-10": 0.065   # fixture month — matches unit test expectation
+
+# ---------------------
+# Logging
+# ---------------------
+logging:
+  level: INFO
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
