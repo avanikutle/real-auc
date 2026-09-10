@@ -5,6 +5,7 @@ Commands are registered here and implemented in the steps/ modules.
 from __future__ import annotations
 
 import click
+from pathlib import Path
 
 from auction_pipeline import setup_logging
 
@@ -85,10 +86,18 @@ def manual_entry_cmd(step: int, entry_no: str, status: str | None, amount: float
 @click.option("--month", required=True)
 @click.option("--output", default="out.xlsx", show_default=True)
 @click.option("--county", default="williamson", show_default=True)
-def export_cmd(month: str, output: str, county: str) -> None:
-    """Step 7 — Export results to an Excel workbook."""
-    from auction_pipeline.export.spreadsheet import run_export
+@click.option("--csv", "also_csv", is_flag=True, default=False,
+              help="Also generate a CSV alongside the Excel file.")
+def export_cmd(month: str, output: str, county: str, also_csv: bool) -> None:
+    """Step 7 — Export results to an Excel workbook (and optionally CSV)."""
+    from auction_pipeline.export.spreadsheet import run_csv_export, run_export
+
     run_export(month=month, county=county, output_path=output)
+
+    # Derive CSV path from --output by swapping extension, or use default
+    if also_csv:
+        csv_path = str(Path(output).with_suffix(".csv"))
+        run_csv_export(month=month, county=county, output_path=csv_path)
 
 
 # ---------------------------------------------------------------------------

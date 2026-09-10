@@ -17,6 +17,7 @@ Resilience:
 """
 from __future__ import annotations
 
+import csv
 import json
 import logging
 from datetime import datetime
@@ -421,6 +422,55 @@ def run_export(month: str, county: str = "williamson", output_path: str = "out.x
             f"  Properties: {len(properties_data)}\n"
             f"  Master errors: {len(master_errors)}\n"
             f"  Sheet errors: {len(sheet_errors)}"
+        )
+    except Exception:
+        raise
+    finally:
+        session.close()
+
+
+def run_csv_export(month: str, county: str = "williamson", output_path: str = "out.csv") -> None:
+    """Generate a flat CSV export using the same columns as the Master sheet."""
+    session = get_session()
+    try:
+        props = (
+            session.query(Property)
+            .filter_by(month=month, county=county)
+            .order_by(Property.entry_no)
+            .all()
+        )
+        log.info("CSV export: %d properties for %s", len(props), month)
+
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        headers = [col[0] for col in _MASTER_COLS]
+
+        errors = 0
+        with open(output, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=headers, extrasaction="ignore")
+            writer.writeheader()
+            for prop in props:
+                try:
+                    data = _build_property_data(session, prop)
+                    row: dict[str, Any] = {}
+                    for col_label, key in _MASTER_COLS:
+                        value = data.get(key)
+                        if key == "_est_pct_paid_down" and value is not None:
+                            value = round(value * 100, 2)  # as percent
+                        elif isinstance(value, bool):
+                            value = "Yes" if value else "No"
+                        row[col_label] = value if value is not None else ""
+                    writer.writerow(row)
+                except Exception as exc:
+                    log.error("CSV row failed for %s: %s", prop.entry_no, exc)
+                    errors += 1
+
+        log.info("CSV saved: %s", output)
+        print(
+            f"\n✓ CSV export complete: {output}\n"
+            f"  Properties: {len(props) - errors}\n"
+            f"  Errors: {errors}"
         )
     except Exception:
         raise
