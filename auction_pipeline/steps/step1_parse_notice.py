@@ -28,27 +28,54 @@ STEP_NAME = "step1_trustee_notice"
 
 
 # ---------------------------------------------------------------------------
-# Regex patterns — written to handle multi-line Texas notice formatting
+# Regex patterns — 3 real-world Williamson County notice formats:
+#   Format A:  "NAMES, as Grantor/Borrower, executed..."   (file_007 style)
+#   Format B:  "Deed of Trust executed by NAMES secures"   (file_008 style)
+#   Format C:  "executed by NAMES" anywhere with AND/&     (WilCo standard)
+#   Format D:  "Grantor: Name" explicit label
 # ---------------------------------------------------------------------------
 
-# Grantor / debtor name lines — two formats:
-# 1. "Grantor: Name" style
-# 2. "executed by NAME AND NAME" (Williamson County format)
-_RE_GRANTOR = re.compile(
-    r"(?:Grantor[s]?|Obligor[s]?|Mortgagor[s]?|Debtor[s]?)\ *[:\-\u2013]\ *(.+?)(?:\n|$)",
-    re.IGNORECASE,
-)
-_RE_GRANTOR_EXEC = re.compile(
-    r"executed\s+by\s+([A-Z][A-Z\s]+(?:AND|&)\s+[A-Z][A-Z\s]+?)\s+secures",
+# Format A: "NAMES, as Grantor/Borrower" — captures everything before the comma
+_RE_GRANTOR_BORROWER = re.compile(
+    r"([A-Z][A-Z\s,\.]+?(?:\s+AND\s+[A-Z][A-Z\s,\.]+?)?)"
+    r",\s*(?:as\s+)?Grantor[/\\]?Borrower",
     re.IGNORECASE,
 )
 
-# Property address — two formats:
-# 1. Labeled "Property Address: ..."
-# 2. All-caps address in header (WilCo format): "297 KOONTZ LOOP, JARRELL, TX 76537"
+# Format A2: "NAMES, grantor(s)" — name before grantor label (file_020 style)
+_RE_GRANTOR_SUFFIX = re.compile(
+    r"(?:by|with)\s+([A-Z][A-Z\s]+(?:AND|&)\s+[A-Z][A-Z\s]+?|[A-Z][A-Z\s]+?),?\s+(?:HUSBAND\s+AND\s+WIFE,?\s+)?grantor[s]?\(",
+    re.IGNORECASE,
+)
+
+# Format T: "Trustor(s): NAME" — file_011 style
+_RE_TRUSTOR = re.compile(
+    r"Trustor[s]?\s*\(?s?\)?\s*[:\-\u2013]\s*([A-Z][A-Z\s,\.]+?)(?:\s*(?:,\s*A\s+SINGLE|Original|\n|$))",
+    re.IGNORECASE,
+)
+
+# Format B: "executed by NAMES secures" — single or multiple names
+_RE_GRANTOR_EXEC_SINGLE = re.compile(
+    r"executed\s+by\s+([A-Z][A-Z\s,\.]+?)\s+secures",
+    re.IGNORECASE,
+)
+
+# Format C: "executed by NAMES AND NAMES" anywhere
+_RE_GRANTOR_EXEC = re.compile(
+    r"executed\s+by\s+([A-Z][A-Z\s]+(?:AND|&)\s+[A-Z][A-Z\s]+?)(?:\s+secures|\s*,)",
+    re.IGNORECASE,
+)
+
+# Format D: explicit Grantor/Mortgagor/Trustor label — handles variants like Grantor(s)/Mortgagor(s):
+_RE_GRANTOR = re.compile(
+    r"(?:Grantor[s]?(?:\(s\))?(?:[/\\]Mortgagor[s]?(?:\(s\))?)?|Obligor[s]?|Mortgagor[s]?(?:\(s\))?|Debtor[s]?)\s*[:\-\u2013]\s*(.+?)(?:\n|,\s*(?:as\s+)?(?:grantor|borrower)|Current\s+Beneficiary|$)",
+    re.IGNORECASE,
+)
+
+# Property address
 _RE_ADDRESS = re.compile(
-    r"(?:property address|property located at|premises located at|located at)\ *[:\-\u2013]?\ *"
-    r"([\d]+\ +[\w\ .,#-]+(?:TX|Texas)\ +\d{5})",
+    r"(?:property address|property located at|premises located at|located at|commonly known as)\s*[:\-\u2013]?\s*"
+    r"([\d]+\s+[\w\s.,#-]+(?:TX|Texas)\s+\d{5})",
     re.IGNORECASE | re.DOTALL,
 )
 _RE_ADDRESS_HEADER = re.compile(
@@ -57,14 +84,14 @@ _RE_ADDRESS_HEADER = re.compile(
 
 # Legal description
 _RE_LEGAL = re.compile(
-    r"(?:legal description|described as follows?|to\s*wit|property description)\s*[:\-–]?\s*"
-    r"(.{20,400}?)(?:\n\n|\Z|WHEREAS|Deed of Trust)",
+    r"(?:legal description|described as follows?|to\s*wit|property description|property to be sold[:\s-]*)\s*[:\-–]?\s*"
+    r"(.{20,400}?)(?:\n\n|\Z|WHEREAS|Deed of Trust|Security Instrument|Sale Information)",
     re.IGNORECASE | re.DOTALL,
 )
 
-# Sale date
+# Sale date — handle "9/1/2026" and "September 1, 2026" and "Date: 9/1/2026"
 _RE_SALE_DATE = re.compile(
-    r"(?:sale\s+date|sold\s+on|first\s+tuesday)\s*[:\-–]?\s*"
+    r"(?:Date\s*[:\-]?\s*|sale\s+date\s*[:\-]?\s*|sold\s+on\s+|first\s+tuesday\s+)"
     r"(\w+\s+\d{1,2},?\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
     re.IGNORECASE,
 )
@@ -75,72 +102,77 @@ _RE_DOT_DATE = re.compile(
     re.IGNORECASE,
 )
 
-# Instrument number — multiple formats:
-# 1. "at Instrument Number 2022120311" (WilCo format)
-# 2. "Instrument No. XXXXXXXXXX"
-# 3. "recorded under Instrument No."
-# NOTE: We explicitly avoid matching "DOCUMENT NO." in legal descriptions
-#       by prioritizing the Security Instrument section.
+# Instrument number
 _RE_INSTRUMENT = re.compile(
     r"(?:at\s+Instrument\s+Number|Instrument\s+No\.?|Clerk['']?s\s+File\s+No\.?|"
-    r"recorded\s+(?:on\s+[\w\s,]+?\s+)?(?:under\s+)?(?:Instrument|Document)\s+(?:Number|No\.?)|Doc\.?\s*No\.?)\s*[:\-\u2013]?\s*"
+    r"recorded\s+(?:on\s+[\w\s,]+?\s+)?(?:under\s+)?(?:Instrument|Document)\s+(?:Number|No\.?)|Doc\.?\s*No\.?)(?:\s+Number)?\s*[:\-\u2013]?\s*"
     r"(\d{9,12})",
     re.IGNORECASE,
 )
-# Secondary: pattern specifically for Security Instrument section
 _RE_INSTRUMENT_SECURITY = re.compile(
-    r"Security\s+Instrument[:\s\S]{0,200}?Instrument\s+Number\s+(\d{9,12})",
+    r"Security\s+Instrument[\:\s\S]{0,200}?Instrument\s+Number\s+(\d{9,12})",
     re.IGNORECASE | re.DOTALL,
 )
 
-# Loan / note amount — multiple formats:
-# 1. "in the amount of $274,928.00" (WilCo format)
-# 2. "original principal amount of $NNN"
-# 3. "note amount: $NNN"
+# Loan amount
 _RE_LOAN_AMOUNT = re.compile(
     r"(?:in\s+the\s+amount\s+of|original\s+(?:principal\s+)?(?:note\s+)?amount|"
     r"note\s+amount|principal\s+amount|principal\s+sum|note\s+of|loan\s+amount)\s*[:\-\u2013]?\s*"
     r"\$\s*([\d,]+\.?\d*)",
     re.IGNORECASE,
 )
-
-# Also try bare dollar amounts that look like loan amounts ($NNN,NNN.00)
 _RE_DOLLAR = re.compile(r"\$([\d,]{4,}\.?\d*)")
 
-# Lender / mortgagee — multiple formats:
-# 1. "Lender: Name" style
-# 2. "NAME, is the current mortgagee" (WilCo format)
-# 3. "payable to NAME"
+# Lender — stop at common separators, not at arbitrary commas
+# "payable to the order of LENDER NAME, its successors"
+_RE_LENDER_PAYABLE = re.compile(
+    r"payable\s+to(?:\s+the\s+order\s+of)?\s+([A-Z][\w\s,\.]+?(?:LLC|LP|Inc\.?|Corp\.?|Bank|Mortgage|Services?|Servicing|Associates?))"
+    r"(?:,\s*its|\.|$)",
+    re.IGNORECASE,
+)
+# "LENDER NAME, is the current mortgagee / whose address"
+_RE_MORTGAGEE = re.compile(
+    r"([A-Z][\w\s,\.]{3,80}?(?:LLC|LP|Inc\.?|Corp\.?|Bank|Mortgage|Services?|Servicing|Associates?))"
+    r"(?:[,\.\s]+whose\s+address|[,\.\s]+is\s+the\s+current\s+mortgagee)",
+    re.IGNORECASE,
+)
+_RE_LENDER_LABEL = re.compile(
+    r"(?:Current\s+)?(?:Beneficiary|Mortgagee)[/\\]?(?:Mortgagee|Beneficiary)?\s*[:\-\u2013]\s*([A-Z][\w\s,\.]{3,80}?(?:LLC|LP|Inc\.?|Corp\.?|Bank|Mortgage|Services?|Servicing|Associates?))",
+    re.IGNORECASE,
+)
 _RE_LENDER = re.compile(
     r"(?:Lender|Beneficiary|Payee)\s*[:\-\u2013]\s*(.+?)(?:\n|,\s*a\s+)",
     re.IGNORECASE,
 )
-_RE_MORTGAGEE = re.compile(
-    r"([A-Z][\w\s,\.]+?(?:LLC|LP|Inc\.?|Corp\.?|Bank|Mortgage|Services?|Servicing))"
-    r"(?:[,\.\s]+whose\s+address|[,\.\s]+is\s+the\s+current\s+mortgagee)",
-    re.IGNORECASE,
-)
-_RE_PAYABLE = re.compile(
-    r"(?:note\s+is\s+payable\s+to|payable\s+to)\s+(.+?)(?:\.|\n|$)",
-    re.IGNORECASE,
-)
 
-# Servicer — WilCo: "LoanCare, LLC is the current mortgage servicer"
+# Servicer — only capture the company name, not the address
+# "Rocket Mortgage, LLC is the current mortgage servicer"
+# or "...and Rocket Mortgage, LLC is the current mortgage servicer"
 _RE_SERVICER = re.compile(
-    r"([\w][\w\s,\.]+?(?:LLC|LP|Inc\.?|Corp\.?|Bank|Mortgage|Services?|Servicing))"
-    r"\s+is\s+the\s+current\s+mortgage\s+servicer",
+    r"(?:^|and\s+|,\s*)([A-Z][\w\s\.]{2,60}?(?:LLC|LP|Inc\.?|Corp\.?|Bank|Mortgage|Services?|Servicing|Associates?))"
+    r"(?:,\s*[\w\s\.]*?)?\s+is\s+the\s+current\s+mortgage\s+servicer",
+    re.IGNORECASE | re.MULTILINE,
+)
+_RE_SERVICER_LABEL = re.compile(
+    r"(?:Mortgage\s+Servicer|Loan\s+Servicer|Servicer)\s*[:\-\u2013]\s*([\w][\w\s,\.]{3,80}?)(?:\n|$|Mortgage\s+Servicer\s+Address)",
     re.IGNORECASE,
 )
-_RE_SERVICER_ALT = re.compile(
-    r"(?:servicer|mortgage\s+servicer|loan\s+servicer)\s*[:\-\u2013]\s*([\w][\w\s,\.]+)",
-    re.IGNORECASE,
+_RE_SERVICER_REPRESENTING = re.compile(
+    r"([A-Z][\w\s\.]{2,60}?(?:LLC|LP|Inc\.?|Corp\.?|Bank|Mortgage|Services?|Servicing|Associates?|N\.A\.))"
+    r"\s+is\s+representing\s+the\s+Current",
+    re.IGNORECASE | re.MULTILINE,
 )
 
-# Trustee — require the colon to distinguish from title "APPOINTMENT OF SUBSTITUTE TRUSTEE"
+# Trustee — require the colon
 _RE_TRUSTEE = re.compile(
     r"Substitute\s+Trustee[s]?\s*:\s*(.+?)(?:\n|$)",
     re.IGNORECASE,
 )
+
+# Backward-compatibility aliases
+_RE_GRANTOR_ALT = _RE_GRANTOR
+_RE_PAYABLE = _RE_LENDER_PAYABLE
+_RE_SERVICER_ALT = _RE_SERVICER_LABEL
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +210,32 @@ def _first_match(pattern: re.Pattern, text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _clean_name(s: str | None) -> str | None:
+    """Clean up extracted name strings — strip trailing/leading junk."""
+    if not s:
+        return None
+    # Remove common OCR noise and trailing punctuation
+    s = re.sub(r"\s+", " ", s).strip().strip(".,;:")
+    # Remove anything after "as Grantor", "hereinafter", "Borrower", "Trustee", "Beneficiary"
+    s = re.split(r"\s+(?:as\s+Grantor|hereinafter|Borrower|AND\s+WIFE\b|Trustee:|Beneficiary:|Recorded:)", s)[0].strip()
+    # Must be at least 4 chars and contain a letter
+    if len(s) < 4 or not re.search(r"[A-Za-z]{2,}", s):
+        return None
+    return s[:200]
+
+
+def _clean_company(s: str | None, max_len: int = 80) -> str | None:
+    """Trim a company name to just the entity name — stops at address indicators."""
+    if not s:
+        return None
+    s = re.sub(r"\s+", " ", s).strip()
+    # Stop at address-like content
+    for stop in [", whose address", ", c/o ", ", 8950", "Mortgage Servicer Address", "\nMortgage"]:
+        if stop.lower() in s.lower():
+            s = s[:s.lower().index(stop.lower())]
+    return s.strip(".,:;")[:max_len] or None
+
+
 def parse_notice_text(text: str) -> dict[str, Any]:
     """
     Extract all fields from trustee notice text.
@@ -185,18 +243,35 @@ def parse_notice_text(text: str) -> dict[str, Any]:
     """
     result: dict[str, Any] = {}
 
-    # Owner / grantor — try "executed by" first (WilCo format), then labeled
-    owner = _first_match(_RE_GRANTOR_EXEC, text)
+    # ------------------------------------------------------------------
+    # Owner / Grantor — try 4 formats in priority order
+    # ------------------------------------------------------------------
+    # Format A: "NAMES, as Grantor/Borrower"
+    owner = _clean_name(_first_match(_RE_GRANTOR_BORROWER, text))
+    # Format A2: "NAMES, grantor(s)" suffix (file_020 style)
     if not owner:
-        owner = _first_match(_RE_GRANTOR, text)
+        owner = _clean_name(_first_match(_RE_GRANTOR_SUFFIX, text))
+    # Format T: "Trustor(s): NAMES" (file_011 style)
+    if not owner:
+        owner = _clean_name(_first_match(_RE_TRUSTOR, text))
+    # Format C: "executed by NAMES AND NAMES" (multi-name with AND/&)
+    if not owner:
+        owner = _clean_name(_first_match(_RE_GRANTOR_EXEC, text))
+    # Format B: "executed by NAME secures" (single name)
+    if not owner:
+        owner = _clean_name(_first_match(_RE_GRANTOR_EXEC_SINGLE, text))
+    # Format D: explicit "Grantor(s)/Mortgagor(s):" label
+    if not owner:
+        owner = _clean_name(_first_match(_RE_GRANTOR, text))
     result["owner_full_name"] = owner
 
-    # Address — try labeled format first, then all-caps header style
+    # ------------------------------------------------------------------
+    # Address
+    # ------------------------------------------------------------------
     addr = _first_match(_RE_ADDRESS, text)
     if not addr:
         addr = _first_match(_RE_ADDRESS_HEADER, text)
     if not addr:
-        # Fallback: find street + city + TX + zip pattern
         m = re.search(
             r"(\d+\s+[\w\s.#-]+?,\s*[\w\s]+,\s*(?:TX|Texas)\s*\d{5})",
             text, re.IGNORECASE
@@ -210,19 +285,17 @@ def parse_notice_text(text: str) -> dict[str, Any]:
         legal = re.sub(r"\s+", " ", legal).strip()
     result["legal_description"] = legal
 
-    # Sale date
+    # Sale date — filter out dates that are clearly filing/recording dates
     result["sale_date"] = _parse_date(_first_match(_RE_SALE_DATE, text))
 
-    # Deed of Trust date (used as origination date proxy)
+    # Deed of Trust origination date
     result["loan_origination_date"] = _parse_date(_first_match(_RE_DOT_DATE, text))
 
-    # Instrument number — prioritize Security Instrument section to avoid
-    # matching plat DOCUMENT NO. in legal descriptions
+    # Instrument number
     instrument = _first_match(_RE_INSTRUMENT_SECURITY, text)
     if not instrument:
         instrument = _first_match(_RE_INSTRUMENT, text)
     if not instrument:
-        # Last resort: 10-digit number near recording language
         m = re.search(
             r"(?:recorded|filed|clerk['']?s\s+file)\s*[:\-\u2013]?\s*(\d{9,12})",
             text, re.IGNORECASE
@@ -235,28 +308,39 @@ def parse_notice_text(text: str) -> dict[str, Any]:
     loan_str = _first_match(_RE_LOAN_AMOUNT, text)
     result["original_loan_amount"] = _parse_amount(loan_str)
     if not result["original_loan_amount"]:
-        # Fallback: largest dollar figure in doc
         matches = _RE_DOLLAR.findall(text)
         amounts = [_parse_amount(m) for m in matches]
         amounts = [a for a in amounts if a and a > 10000]
         result["original_loan_amount"] = max(amounts) if amounts else None
 
-    # Lender / mortgagee
-    lender = _first_match(_RE_LENDER, text)
+    # ------------------------------------------------------------------
+    # Lender — clean to just company name
+    # ------------------------------------------------------------------
+    lender = _clean_company(_first_match(_RE_LENDER_PAYABLE, text))
     if not lender:
-        lender = _first_match(_RE_MORTGAGEE, text)
+        lender = _clean_company(_first_match(_RE_MORTGAGEE, text))
     if not lender:
-        lender = _first_match(_RE_PAYABLE, text)
+        lender = _clean_company(_first_match(_RE_LENDER_LABEL, text))
+    if not lender:
+        lender = _clean_company(_first_match(_RE_LENDER, text))
     result["lender"] = lender
 
-    # Servicer
-    servicer = _first_match(_RE_SERVICER, text)
+    # ------------------------------------------------------------------
+    # Servicer — clean to just company name
+    # ------------------------------------------------------------------
+    servicer = _clean_company(_first_match(_RE_SERVICER, text))
     if not servicer:
-        servicer = _first_match(_RE_SERVICER_ALT, text)
+        servicer = _clean_company(_first_match(_RE_SERVICER_LABEL, text))
+    if not servicer:
+        servicer = _clean_company(_first_match(_RE_SERVICER_REPRESENTING, text))
     result["servicer"] = servicer
 
-    # Trustee(s) — must use "Substitute Trustee(s):" label to avoid false matches
-    result["trustee"] = _first_match(_RE_TRUSTEE, text)
+    # Trustee — first name only (before comma or newline)
+    trustee_raw = _first_match(_RE_TRUSTEE, text)
+    if trustee_raw:
+        # Often "John Smith, Attorney at Law" — take only first name segment
+        trustee_raw = trustee_raw.split(",")[0].strip()
+    result["trustee"] = trustee_raw
 
     return result
 

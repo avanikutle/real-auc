@@ -17,3 +17,8 @@ workspace/
 .env
 *.log
 alembic/versions/__pycache__/
+scratch_*.png
+screenshot.png
+step1_out.csv
+test_*.py
+logs/

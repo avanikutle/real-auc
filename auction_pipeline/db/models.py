@@ -44,9 +44,9 @@ class Property(Base):
     original_loan_amount: Mapped[float | None] = mapped_column(Float)
     loan_origination_date: Mapped[date | None] = mapped_column(Date)
     loan_type: Mapped[str | None] = mapped_column(String(64))
-    lender: Mapped[str | None] = mapped_column(String(256))
-    servicer: Mapped[str | None] = mapped_column(String(256))
-    trustee: Mapped[str | None] = mapped_column(String(256))
+    lender: Mapped[str | None] = mapped_column(Text)
+    servicer: Mapped[str | None] = mapped_column(Text)
+    trustee: Mapped[str | None] = mapped_column(Text)
     county: Mapped[str | None] = mapped_column(String(64))
     month: Mapped[str | None] = mapped_column(String(7))  # YYYY-MM
     source_file_name: Mapped[str | None] = mapped_column(String(256))

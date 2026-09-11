@@ -53,7 +53,18 @@ def setup_logging() -> None:
     cfg = load_config().get("logging", {})
     level = getattr(logging, cfg.get("level", "INFO").upper(), logging.INFO)
     fmt = cfg.get("format", "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    logging.basicConfig(level=level, format=fmt)
+    
+    log_dir = _ROOT / "logs" / "backend"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    logging.basicConfig(
+        level=level, 
+        format=fmt,
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_dir / "pipeline.log")
+        ]
+    )
 
 
 def workspace_path(*parts: str) -> Path:

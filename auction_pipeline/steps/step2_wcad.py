@@ -15,8 +15,13 @@ import json
 import logging
 import re
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
+
+from bs4 import BeautifulSoup
+import requests
+from playwright.sync_api import sync_playwright
 
 import requests
 from bs4 import BeautifulSoup
@@ -43,65 +48,74 @@ _WCAD_SEARCH_URL = "https://www.wcad.org/property-search/"
 
 def _search_wcad_by_address(address: str) -> dict | None:
     """
-    Query WCAD property search and return {r_number, assessed_value, ...} or None.
-    Uses the WCAD quick search form.
+    Query WCAD property search via Playwright and return {r_number, ...} or None.
+    Uses the new search.wcad.org Kendo UI site.
     """
     if not address:
         return None
 
-    # Extract the street number and name from the address string
-    # e.g. "297 KOONTZ LOOP, JARRELL, TX 76537" → "297 KOONTZ LOOP"
     m = re.match(r"(\d+\s+[\w\s.]+?)(?:,|TX|$)", address, re.IGNORECASE)
     if not m:
         log.debug("Cannot parse street from address: %r", address)
         return None
 
     street = m.group(1).strip().upper()
-    log.info("Searching WCAD for address: %r", street)
+    
+    # Run the playwright search function
+    def run_playwright_search(query_str: str) -> dict | None:
+        log.info("Searching WCAD using Playwright for query: %r", query_str)
+        query_enc = urllib.parse.quote(query_str)
+        search_url = f"https://search.wcad.org/Property-Search-Result/searchtext/{query_enc}"
+        
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(user_agent="Mozilla/5.0")
+                page = context.new_page()
+                page.goto(search_url, wait_until="domcontentloaded")
+                
+                try:
+                    # Wait for any text matching R followed by 5-7 digits
+                    r_number_locator = page.locator("text=/R\\d{5,7}/").first
+                    r_number_locator.wait_for(timeout=10000)
+                    
+                    r_number_text = r_number_locator.inner_text().strip()
+                    # Ensure we only get the R-number part if it's mixed with other text
+                    m_r = re.search(r"R\d{5,7}", r_number_text)
+                    if m_r:
+                        r_number_text = m_r.group(0)
+                        
+                    log.info("WCAD found R Number: %s", r_number_text)
+                    browser.close()
+                    return {
+                        "r_number": r_number_text,
+                        "assessed_value": None,
+                        "source": "wcad_search",
+                    }
+                except Exception:
+                    log.debug("WCAD search returned no R-number for %s (or timeout)", query_str)
+                    browser.close()
+                    return None
+        except Exception as exc:
+            log.warning("Playwright WCAD search failed: %s", exc)
+            return None
 
-    try:
-        # WCAD uses a WordPress-based search with a GET parameter
-        resp = requests.get(
-            _WCAD_SEARCH_URL,
-            params={"s": street},
-            headers=_HEADERS,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return _parse_wcad_search_results(resp.text)
-    except requests.RequestException as exc:
-        log.warning("WCAD search request failed: %s", exc)
-        return None
-
-
-def _parse_wcad_search_results(html: str) -> dict | None:
-    """Parse WCAD search results page for R Number and assessed values."""
-    soup = BeautifulSoup(html, "lxml")
-
-    # Look for a link or table entry with pattern R followed by digits
-    r_matches = re.findall(r"R(\d{5,7})", html)
-    assessed_values = re.findall(r"\$([\d,]+)", html)
-
-    if not r_matches:
-        log.debug("No R Number found in WCAD search results")
-        return None
-
-    r_number = "R" + r_matches[0]
-    assessed = None
-    if assessed_values:
-        # Largest value is likely total assessed
-        amounts = [int(v.replace(",", "")) for v in assessed_values]
-        amounts = [a for a in amounts if a > 1000]
-        assessed = max(amounts) if amounts else None
-
-    log.info("WCAD found R Number: %s, assessed: %s", r_number, assessed)
-    return {
-        "r_number": r_number,
-        "assessed_value": assessed,
-        "source": "wcad_search",
-    }
-
-
+    # First try the full parsed street
+    result = run_playwright_search(street)
+    if result:
+        return result
+        
+    # If it fails, fallback to just the first two words (e.g., "17060 CONWAY SPGS CT" -> "17060 CONWAY")
+    tokens = street.split()
+    if len(tokens) > 2:
+        fallback_street = " ".join(tokens[:2])
+        log.info("Full street search failed, trying fallback: %r", fallback_street)
+        result = run_playwright_search(fallback_street)
+        if result:
+            return result
+            
+    log.warning("WCAD search completely failed for address: %r", address)
+    return None
 def _try_fetch_appraisal_pdf(r_number: str, year: int, dest: Path, force: bool) -> bool:
     """
     Try to download the appraisal notice PDF from documents.wcad.org.

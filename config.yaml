@@ -6,7 +6,7 @@
 # Database
 # ---------------------
 database:
-  url: "sqlite:///auction_pipeline.db"
+  url: "postgresql://fnooms:fnooms123@localhost:5432/fno_oms?options=-csearch_path=rkreality"
 
 # ---------------------
 # County definitions

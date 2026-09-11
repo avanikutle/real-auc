@@ -100,6 +100,35 @@ def export_cmd(month: str, output: str, county: str, also_csv: bool) -> None:
         run_csv_export(month=month, county=county, output_path=csv_path)
 
 
+@cli.command("export-step")
+@click.option("--step", required=True, type=int)
+@click.option("--month", required=True)
+@click.option("--output", default="step_out.csv", show_default=True)
+def export_step_cmd(step: int, month: str, output: str) -> None:
+    """Export raw results of a specific step to CSV for validation."""
+    from auction_pipeline.db.models import Property, StepResult
+    from auction_pipeline.db.session import get_session
+    import csv
+    import json
+    
+    session = get_session()
+    try:
+        props = session.query(Property).filter_by(month=month).all()
+        if not props:
+            click.echo(f"No properties found for month {month}")
+            return
+            
+        with open(output, "w", newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Entry No", "Address", "Owner", "Status"])
+            for p in props:
+                writer.writerow([p.entry_no, p.address, p.owner_full_name, p.status])
+                
+        click.echo(f"Exported step data to {output}")
+    finally:
+        session.close()
+
+
 # ---------------------------------------------------------------------------
 # Internal dispatcher
 # ---------------------------------------------------------------------------
